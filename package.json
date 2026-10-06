@@ -4,7 +4,8 @@
   "description": "WhatsApp sticker bot",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "clean:auth": "node -e \"const fs = require('fs'); fs.rmSync('./auth_info', { recursive: true, force: true }); console.log('auth_info cleared.');\""
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.19",

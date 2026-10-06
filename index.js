@@ -228,10 +228,15 @@ async function handleMessage(sock, msg) {
   }
 }
 
+let hasWarnedAppStateMissing = false;
+
 async function autoArchiveChat(sock, jid, lastMsg) {
   try {
     if (!sock.authState?.creds?.myAppStateKeyId) {
-      console.log('[Privacy] Lewati auto-archive: myAppStateKeyId belum sinkron dari WhatsApp.');
+      if (!hasWarnedAppStateMissing) {
+        console.log('[Privacy] Fitur auto-archive & delete-for-me dinonaktifkan: myAppStateKeyId tidak disediakan WhatsApp untuk sesi ini.');
+        hasWarnedAppStateMissing = true;
+      }
       return;
     }
     const timestamp = lastMsg?.messageTimestamp ? Number(lastMsg.messageTimestamp) : Math.floor(Date.now() / 1000);
@@ -256,7 +261,10 @@ async function autoArchiveChat(sock, jid, lastMsg) {
 async function autoDeleteMessageForMe(sock, jid, msgOrKey) {
   try {
     if (!sock.authState?.creds?.myAppStateKeyId) {
-      console.log('[Privacy] Lewati auto-delete: myAppStateKeyId belum sinkron dari WhatsApp.');
+      if (!hasWarnedAppStateMissing) {
+        console.log('[Privacy] Fitur auto-archive & delete-for-me dinonaktifkan: myAppStateKeyId tidak disediakan WhatsApp untuk sesi ini.');
+        hasWarnedAppStateMissing = true;
+      }
       return;
     }
     const key = msgOrKey?.key || msgOrKey;
@@ -350,7 +358,17 @@ async function getPhoneNumber() {
   return chosenPhoneNumber;
 }
 
+let isCleaned = false;
+
 async function startBot() {
+  if (!isCleaned && (process.argv.includes('--clean') || process.argv.includes('--reset'))) {
+    isCleaned = true;
+    if (fs.existsSync(config.sessionDir)) {
+      fs.rmSync(config.sessionDir, { recursive: true, force: true });
+      console.log(`[Auth] Direktori sesi ${config.sessionDir} berhasil dibersihkan.`);
+    }
+  }
+
   const { state, saveCreds } = await useMultiFileAuthState(config.sessionDir);
 
   if (!state.creds.me?.id && state.creds.signalIdentities?.[0]?.identifier?.name) {
@@ -386,8 +404,10 @@ async function startBot() {
   });
 
   sock.ev.on('creds.update', (update) => {
+    Object.assign(state.creds, update);
     saveCreds();
     if (update.myAppStateKeyId) {
+      hasWarnedAppStateMissing = false;
       console.log(`[Privacy] Sukses! myAppStateKeyId berhasil disinkronkan dari WhatsApp.`);
     }
   });

@@ -36,7 +36,7 @@
    - **Auto Archive**: Invokes `sock.chatModify({ archive: true, lastMessages: [...] }, jid)` immediately after sending sticker.
    - **Auto Delete for Me**: Invokes `sock.chatModify({ deleteForMe: { key, timestamp, deleteMedia: true } }, jid)` on incoming media/messages and the outgoing generated sticker right after processing.
    - **Non-blocking Fault Tolerance**: Both operations run inside dedicated `try...catch` blocks to ensure failures never terminate or disrupt the bot process.
-   - **App State Key Requirement**: `sock.chatModify` uses Syncd mutations which require `myAppStateKeyId` provided by WhatsApp's primary phone during companion desktop synchronization (`makeCacheableSignalKeyStore` + Desktop browser configuration).
+   - **App State Key Requirement**: `sock.chatModify` relies on Syncd mutations requiring `myAppStateKeyId`. Kunci ini hanya dikirim oleh WhatsApp pada tahap initial bootstrap sync (umumnya saat login via QR Code). Jika tidak tersedia (misal via Pairing Code), fitur ini dilewati secara senyap tanpa mengganggu siklus pembuatan stiker.
 
 7. **Anti-Ban & Rate Limiting**
    - **Rate Limit Window**: Maximum 20 chats processed per minute (`maxChatsPerMinute: 20`) via 60-second rolling sliding window. Excess incoming requests are discarded with terminal warning.
