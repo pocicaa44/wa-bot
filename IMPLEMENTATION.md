@@ -33,7 +33,7 @@
    - Response: `"Maaf saya tidak mengerti, gunakan .help untuk melihat bantuan."`
 
 6. **Privacy Features**
-   - **Auto Archive**: Invokes `sock.chatModify({ archive: true, lastMessages: [...] }, jid)` immediately after sending sticker.
+   - **Auto Archive**: Invokes `sock.chatModify({ archive: true, lastMessages: [...] }, jid)` on every incoming chat interaction (commands, fallback, messages) and immediately after any outgoing reply.
    - **Auto Delete for Me**: Invokes `sock.chatModify({ deleteForMe: { key, timestamp, deleteMedia: true } }, jid)` on incoming media/messages and the outgoing generated sticker right after processing.
    - **Non-blocking Fault Tolerance**: Both operations run inside dedicated `try...catch` blocks to ensure failures never terminate or disrupt the bot process.
    - **App State Key Requirement**: `sock.chatModify` relies on Syncd mutations requiring `myAppStateKeyId`. Kunci ini hanya dikirim oleh WhatsApp pada tahap initial bootstrap sync (umumnya saat login via QR Code). Jika tidak tersedia (misal via Pairing Code), fitur ini dilewati secara senyap tanpa mengganggu siklus pembuatan stiker.

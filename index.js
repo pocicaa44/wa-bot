@@ -12,6 +12,11 @@ const pino = require('pino');
 const sharp = require('sharp');
 const WebP = require('node-webpmux');
 const qrcode = require('qrcode-terminal');
+const { handleGifCommand } = require('./lib/gifConverter');
+
+if (!fs.existsSync('./tmp')) {
+  fs.mkdirSync('./tmp', { recursive: true });
+}
 
 const config = {
   authMethod: process.env.AUTH_METHOD || '',
@@ -24,10 +29,11 @@ const config = {
   maxChatsPerMinute: Number(process.env.MAX_CHATS_PER_MINUTE) || 20
 };
 
-const helpMessage = `dwnBOT
-.sticker : kirim gambar dengan caption .sticker untuk membuat stiker
-.help : tampilkan menu bantuan
-.status : tampilkan status bot`;
+const helpMessage = `*dwnBOT*
+- *.sticker* : kirim gambar dengan caption *.sticker* untuk membuat stiker
+- *.gif* : balas video dengan *.gif* untuk membuat GIF
+- *.help* : tampilkan menu bantuan
+- *.status* : tampilkan status bot`;
 
 const fallbackMessage = 'Maaf saya tidak mengerti, gunakan .help untuk melihat bantuan.';
 
@@ -119,13 +125,24 @@ async function handleMessage(sock, msg) {
   }
 
   await markAsRead(sock, [msg.key]);
+  await autoArchiveChat(sock, jid, msg);
 
-  const rawText = content.conversation || content.extendedTextMessage?.text || content.imageMessage?.caption || '';
+  const rawText = content.conversation || content.extendedTextMessage?.text || content.imageMessage?.caption || content.videoMessage?.caption || '';
   const text = rawText.trim().toLowerCase();
   const isStickerCommand = text === '.sticker' || text === '.stiker';
+  const isGifCommand = text === '.gif';
 
   const quotedContent = unwrapMessage(content.extendedTextMessage?.contextInfo?.quotedMessage);
   const targetImageMsg = content.imageMessage || quotedContent?.imageMessage;
+
+  if (isGifCommand) {
+    try {
+      await handleGifCommand(sock, msg, jid, quotedContent || (content.videoMessage ? content : null));
+    } catch (err) {
+      console.error('[gif] Error tidak terduga pada handleGifCommand:', err.message);
+    }
+    return;
+  }
 
   if (targetImageMsg) {
     if (isStickerCommand) {
@@ -169,7 +186,9 @@ async function handleMessage(sock, msg) {
         console.error('Failed to create sticker:', err.message);
         try {
           await simulateTyping(sock, jid, 500, 1000);
-          await sock.sendMessage(jid, { text: 'failed' }, { quoted: msg });
+          const sentFail = await sock.sendMessage(jid, { text: 'failed' }, { quoted: msg });
+          await sleep(getRandomDelay(400, 800));
+          await autoArchiveChat(sock, jid, sentFail || msg);
         } catch (sendErr) {
           console.error('Failed to send error notification:', sendErr.message);
         }
@@ -180,7 +199,9 @@ async function handleMessage(sock, msg) {
     if (content.imageMessage) {
       try {
         await simulateTyping(sock, jid, 800, 1500);
-        await sock.sendMessage(jid, { text: 'Kirim gambar dengan caption .sticker untuk membuat stiker, atau gunakan .help untuk melihat bantuan.' }, { quoted: msg });
+        const sentMsg = await sock.sendMessage(jid, { text: 'Kirim gambar dengan caption .sticker untuk membuat stiker, atau gunakan .help untuk melihat bantuan.' }, { quoted: msg });
+        await sleep(getRandomDelay(400, 800));
+        await autoArchiveChat(sock, jid, sentMsg || msg);
       } catch (err) {
         console.error('Failed to send image fallback reply:', err.message);
       }
@@ -191,7 +212,9 @@ async function handleMessage(sock, msg) {
   if (text === '.help') {
     try {
       await simulateTyping(sock, jid, 800, 1500);
-      await sock.sendMessage(jid, { text: helpMessage }, { quoted: msg });
+      const sentMsg = await sock.sendMessage(jid, { text: helpMessage }, { quoted: msg });
+      await sleep(getRandomDelay(400, 800));
+      await autoArchiveChat(sock, jid, sentMsg || msg);
     } catch (err) {
       console.error('Failed to send help reply:', err.message);
     }
@@ -201,7 +224,9 @@ async function handleMessage(sock, msg) {
   if (text === '.status') {
     try {
       await simulateTyping(sock, jid, 500, 1000);
-      await sock.sendMessage(jid, { text: 'ready' }, { quoted: msg });
+      const sentMsg = await sock.sendMessage(jid, { text: 'ready' }, { quoted: msg });
+      await sleep(getRandomDelay(400, 800));
+      await autoArchiveChat(sock, jid, sentMsg || msg);
     } catch (err) {
       console.error('Failed to send status reply:', err.message);
     }
@@ -211,7 +236,9 @@ async function handleMessage(sock, msg) {
   if (isStickerCommand) {
     try {
       await simulateTyping(sock, jid, 800, 1500);
-      await sock.sendMessage(jid, { text: 'Kirim gambar dengan caption .sticker atau balas gambar dengan .sticker untuk membuat stiker.' }, { quoted: msg });
+      const sentMsg = await sock.sendMessage(jid, { text: 'Kirim gambar dengan caption .sticker atau balas gambar dengan .sticker untuk membuat stiker.' }, { quoted: msg });
+      await sleep(getRandomDelay(400, 800));
+      await autoArchiveChat(sock, jid, sentMsg || msg);
     } catch (err) {
       console.error('Failed to send sticker hint reply:', err.message);
     }
@@ -221,7 +248,9 @@ async function handleMessage(sock, msg) {
   if (rawText) {
     try {
       await simulateTyping(sock, jid, 800, 1500);
-      await sock.sendMessage(jid, { text: fallbackMessage }, { quoted: msg });
+      const sentMsg = await sock.sendMessage(jid, { text: fallbackMessage }, { quoted: msg });
+      await sleep(getRandomDelay(400, 800));
+      await autoArchiveChat(sock, jid, sentMsg || msg);
     } catch (err) {
       console.error('Failed to send fallback reply:', err.message);
     }
