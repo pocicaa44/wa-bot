@@ -12,7 +12,11 @@ const pino = require('pino');
 const sharp = require('sharp');
 const WebP = require('node-webpmux');
 const qrcode = require('qrcode-terminal');
-const { handleGifCommand } = require('./lib/gifConverter');
+const {
+  parseVStickerCommand,
+  handleVSticker,
+  handleStaticStickerFromVideo
+} = require('./lib/videoSticker');
 
 if (!fs.existsSync('./tmp')) {
   fs.mkdirSync('./tmp', { recursive: true });
@@ -30,8 +34,8 @@ const config = {
 };
 
 const helpMessage = `*dwnBOT*
-- *.sticker* : kirim gambar dengan caption *.sticker* untuk membuat stiker
-- *.gif* : balas video dengan *.gif* untuk membuat GIF
+- *.sticker* : kirim gambar/video atau balas media dengan *.sticker* untuk stiker statis
+- *.vsticker* : balas video dengan *.vsticker* [detik] untuk stiker video
 - *.help* : tampilkan menu bantuan
 - *.status* : tampilkan status bot`;
 
@@ -130,22 +134,44 @@ async function handleMessage(sock, msg) {
   const rawText = content.conversation || content.extendedTextMessage?.text || content.imageMessage?.caption || content.videoMessage?.caption || '';
   const text = rawText.trim().toLowerCase();
   const isStickerCommand = text === '.sticker' || text === '.stiker';
-  const isGifCommand = text === '.gif';
+  const isVStickerCommand = text.startsWith('.vsticker');
 
   const quotedContent = unwrapMessage(content.extendedTextMessage?.contextInfo?.quotedMessage);
+  const targetVideoMsg = quotedContent?.videoMessage || content.videoMessage;
   const targetImageMsg = content.imageMessage || quotedContent?.imageMessage;
 
-  if (isGifCommand) {
+  if (isVStickerCommand) {
+    const parsed = parseVStickerCommand(rawText);
+    if (!parsed.valid) {
+      await sock.sendMessage(jid, { text: parsed.error }, { quoted: msg });
+      return;
+    }
+
+    const quotedMedia = quotedContent || (content.videoMessage || content.imageMessage ? content : null);
+    if (!quotedMedia) {
+      await sock.sendMessage(jid, { text: '❌ Balas sebuah video dengan .vsticker' }, { quoted: msg });
+      return;
+    }
+
     try {
-      await handleGifCommand(sock, msg, jid, quotedContent || (content.videoMessage ? content : null));
+      await handleVSticker(sock, msg, jid, quotedMedia, parsed.duration, parsed.warning);
     } catch (err) {
-      console.error('[gif] Error tidak terduga pada handleGifCommand:', err.message);
+      console.error('[vsticker] Error tidak terduga pada handleVSticker:', err.message);
     }
     return;
   }
 
-  if (targetImageMsg) {
-    if (isStickerCommand) {
+  if (isStickerCommand) {
+    if (targetVideoMsg) {
+      try {
+        await handleStaticStickerFromVideo(sock, msg, jid, quotedContent || (content.videoMessage ? content : null));
+      } catch (err) {
+        console.error('[vsticker] Error tidak terduga pada handleStaticStickerFromVideo:', err.message);
+      }
+      return;
+    }
+
+    if (targetImageMsg) {
       try {
         const downloadTarget = content.imageMessage
           ? { key: msg.key, message: { imageMessage: content.imageMessage } }
@@ -196,17 +222,24 @@ async function handleMessage(sock, msg) {
       return;
     }
 
-    if (content.imageMessage) {
-      try {
-        await simulateTyping(sock, jid, 800, 1500);
-        const sentMsg = await sock.sendMessage(jid, { text: 'Kirim gambar dengan caption .sticker untuk membuat stiker, atau gunakan .help untuk melihat bantuan.' }, { quoted: msg });
-        await sleep(getRandomDelay(400, 800));
-        await autoArchiveChat(sock, jid, sentMsg || msg);
-      } catch (err) {
-        console.error('Failed to send image fallback reply:', err.message);
-      }
-      return;
+    await sock.sendMessage(
+      jid,
+      { text: '❌ Balas sebuah video atau gambar dengan perintah ini.' },
+      { quoted: msg }
+    );
+    return;
+  }
+
+  if (content.imageMessage) {
+    try {
+      await simulateTyping(sock, jid, 800, 1500);
+      const sentMsg = await sock.sendMessage(jid, { text: 'Kirim gambar dengan caption .sticker untuk membuat stiker, atau gunakan .help untuk melihat bantuan.' }, { quoted: msg });
+      await sleep(getRandomDelay(400, 800));
+      await autoArchiveChat(sock, jid, sentMsg || msg);
+    } catch (err) {
+      console.error('Failed to send image fallback reply:', err.message);
     }
+    return;
   }
 
   if (text === '.help') {
@@ -229,18 +262,6 @@ async function handleMessage(sock, msg) {
       await autoArchiveChat(sock, jid, sentMsg || msg);
     } catch (err) {
       console.error('Failed to send status reply:', err.message);
-    }
-    return;
-  }
-
-  if (isStickerCommand) {
-    try {
-      await simulateTyping(sock, jid, 800, 1500);
-      const sentMsg = await sock.sendMessage(jid, { text: 'Kirim gambar dengan caption .sticker atau balas gambar dengan .sticker untuk membuat stiker.' }, { quoted: msg });
-      await sleep(getRandomDelay(400, 800));
-      await autoArchiveChat(sock, jid, sentMsg || msg);
-    } catch (err) {
-      console.error('Failed to send sticker hint reply:', err.message);
     }
     return;
   }
