@@ -17,6 +17,13 @@ const {
   handleVSticker,
   handleStaticStickerFromVideo
 } = require('./lib/videoSticker');
+const {
+  initSeenJids,
+  isFirstTimeFromJid,
+  archiveChat,
+  deleteMediaBatch,
+  resetAppStateWarning
+} = require('./lib/chatHygiene');
 
 if (!fs.existsSync('./tmp')) {
   fs.mkdirSync('./tmp', { recursive: true });
@@ -28,7 +35,7 @@ const config = {
   sessionDir: './auth_info',
   stickerQuality: 80,
   stickerSize: 512,
-  packName: process.env.PACK_NAME || 'dwnBOT',
+  packName: process.env.PACK_NAME || 'smone',
   packPublisher: process.env.PACK_PUBLISHER || '@imagoodppl',
   maxChatsPerMinute: Number(process.env.MAX_CHATS_PER_MINUTE) || 20
 };
@@ -129,7 +136,13 @@ async function handleMessage(sock, msg) {
   }
 
   await markAsRead(sock, [msg.key]);
-  await autoArchiveChat(sock, jid, msg);
+
+  if (!msg.key.fromMe && jid.endsWith('@s.whatsapp.net')) {
+    const isFirst = await isFirstTimeFromJid(jid);
+    if (isFirst) {
+      await archiveChat(sock, jid, msg);
+    }
+  }
 
   const rawText = content.conversation || content.extendedTextMessage?.text || content.imageMessage?.caption || content.videoMessage?.caption || '';
   const text = rawText.trim().toLowerCase();
@@ -154,7 +167,18 @@ async function handleMessage(sock, msg) {
     }
 
     try {
-      await handleVSticker(sock, msg, jid, quotedMedia, parsed.duration, parsed.warning);
+      const sentMedia = await handleVSticker(sock, msg, jid, quotedMedia, parsed.duration, parsed.warning);
+      if (sentMedia) {
+        const contextInfo = msg.message?.extendedTextMessage?.contextInfo;
+        const quotedMediaKey = contextInfo?.stanzaId ? {
+          remoteJid: jid,
+          fromMe: contextInfo.participant === sock.user?.id,
+          id: contextInfo.stanzaId,
+          participant: contextInfo.participant
+        } : null;
+        const keysToDelete = [msg.key, quotedMediaKey, sentMedia?.key].filter(Boolean);
+        await deleteMediaBatch(sock, jid, keysToDelete);
+      }
     } catch (err) {
       console.error('[vsticker] Error tidak terduga pada handleVSticker:', err.message);
     }
@@ -164,7 +188,18 @@ async function handleMessage(sock, msg) {
   if (isStickerCommand) {
     if (targetVideoMsg) {
       try {
-        await handleStaticStickerFromVideo(sock, msg, jid, quotedContent || (content.videoMessage ? content : null));
+        const sentMedia = await handleStaticStickerFromVideo(sock, msg, jid, quotedContent || (content.videoMessage ? content : null));
+        if (sentMedia) {
+          const contextInfo = msg.message?.extendedTextMessage?.contextInfo;
+          const quotedMediaKey = contextInfo?.stanzaId ? {
+            remoteJid: jid,
+            fromMe: contextInfo.participant === sock.user?.id,
+            id: contextInfo.stanzaId,
+            participant: contextInfo.participant
+          } : null;
+          const keysToDelete = [msg.key, quotedMediaKey, sentMedia?.key].filter(Boolean);
+          await deleteMediaBatch(sock, jid, keysToDelete);
+        }
       } catch (err) {
         console.error('[vsticker] Error tidak terduga pada handleStaticStickerFromVideo:', err.message);
       }
@@ -195,26 +230,21 @@ async function handleMessage(sock, msg) {
         await simulateTyping(sock, jid, 1500, 2500);
         const sentMsg = await sock.sendMessage(jid, { sticker });
 
-        await sleep(getRandomDelay(600, 1000));
-        await autoArchiveChat(sock, jid, sentMsg || msg);
+        const contextInfo = msg.message?.extendedTextMessage?.contextInfo;
+        const quotedMediaKey = contextInfo?.stanzaId ? {
+          remoteJid: jid,
+          fromMe: contextInfo.participant === sock.user?.id,
+          id: contextInfo.stanzaId,
+          participant: contextInfo.participant
+        } : (downloadTarget.key && downloadTarget.key.id !== msg.key?.id ? downloadTarget.key : null);
 
-        await sleep(getRandomDelay(400, 800));
-        await autoDeleteMessageForMe(sock, jid, msg);
-        if (downloadTarget.key && downloadTarget.key.id && downloadTarget.key.id !== msg.key?.id) {
-          await sleep(getRandomDelay(300, 600));
-          await autoDeleteMessageForMe(sock, jid, downloadTarget.key);
-        }
-        if (sentMsg) {
-          await sleep(getRandomDelay(300, 600));
-          await autoDeleteMessageForMe(sock, jid, sentMsg);
-        }
+        const keysToDelete = [msg.key, quotedMediaKey, sentMsg?.key].filter(Boolean);
+        await deleteMediaBatch(sock, jid, keysToDelete);
       } catch (err) {
         console.error('Failed to create sticker:', err.message);
         try {
           await simulateTyping(sock, jid, 500, 1000);
-          const sentFail = await sock.sendMessage(jid, { text: 'failed' }, { quoted: msg });
-          await sleep(getRandomDelay(400, 800));
-          await autoArchiveChat(sock, jid, sentFail || msg);
+          await sock.sendMessage(jid, { text: 'failed' }, { quoted: msg });
         } catch (sendErr) {
           console.error('Failed to send error notification:', sendErr.message);
         }
@@ -233,9 +263,7 @@ async function handleMessage(sock, msg) {
   if (content.imageMessage) {
     try {
       await simulateTyping(sock, jid, 800, 1500);
-      const sentMsg = await sock.sendMessage(jid, { text: 'Kirim gambar dengan caption .sticker untuk membuat stiker, atau gunakan .help untuk melihat bantuan.' }, { quoted: msg });
-      await sleep(getRandomDelay(400, 800));
-      await autoArchiveChat(sock, jid, sentMsg || msg);
+      await sock.sendMessage(jid, { text: 'Kirim gambar dengan caption .sticker untuk membuat stiker, atau gunakan .help untuk melihat bantuan.' }, { quoted: msg });
     } catch (err) {
       console.error('Failed to send image fallback reply:', err.message);
     }
@@ -245,9 +273,7 @@ async function handleMessage(sock, msg) {
   if (text === '.help') {
     try {
       await simulateTyping(sock, jid, 800, 1500);
-      const sentMsg = await sock.sendMessage(jid, { text: helpMessage }, { quoted: msg });
-      await sleep(getRandomDelay(400, 800));
-      await autoArchiveChat(sock, jid, sentMsg || msg);
+      await sock.sendMessage(jid, { text: helpMessage }, { quoted: msg });
     } catch (err) {
       console.error('Failed to send help reply:', err.message);
     }
@@ -257,9 +283,7 @@ async function handleMessage(sock, msg) {
   if (text === '.status') {
     try {
       await simulateTyping(sock, jid, 500, 1000);
-      const sentMsg = await sock.sendMessage(jid, { text: 'ready' }, { quoted: msg });
-      await sleep(getRandomDelay(400, 800));
-      await autoArchiveChat(sock, jid, sentMsg || msg);
+      await sock.sendMessage(jid, { text: 'ready' }, { quoted: msg });
     } catch (err) {
       console.error('Failed to send status reply:', err.message);
     }
@@ -269,76 +293,10 @@ async function handleMessage(sock, msg) {
   if (rawText) {
     try {
       await simulateTyping(sock, jid, 800, 1500);
-      const sentMsg = await sock.sendMessage(jid, { text: fallbackMessage }, { quoted: msg });
-      await sleep(getRandomDelay(400, 800));
-      await autoArchiveChat(sock, jid, sentMsg || msg);
+      await sock.sendMessage(jid, { text: fallbackMessage }, { quoted: msg });
     } catch (err) {
       console.error('Failed to send fallback reply:', err.message);
     }
-  }
-}
-
-let hasWarnedAppStateMissing = false;
-
-async function autoArchiveChat(sock, jid, lastMsg) {
-  try {
-    if (!sock.authState?.creds?.myAppStateKeyId) {
-      if (!hasWarnedAppStateMissing) {
-        console.log('[Privacy] Fitur auto-archive & delete-for-me dinonaktifkan: myAppStateKeyId tidak disediakan WhatsApp untuk sesi ini.');
-        hasWarnedAppStateMissing = true;
-      }
-      return;
-    }
-    const timestamp = lastMsg?.messageTimestamp ? Number(lastMsg.messageTimestamp) : Math.floor(Date.now() / 1000);
-    await sock.chatModify(
-      {
-        archive: true,
-        lastMessages: [
-          {
-            key: lastMsg.key,
-            messageTimestamp: timestamp
-          }
-        ]
-      },
-      jid
-    );
-    console.log(`[Privacy] Berhasil mengarsipkan chat ${jid}`);
-  } catch (err) {
-    console.error('Failed to auto-archive chat:', err.message);
-  }
-}
-
-async function autoDeleteMessageForMe(sock, jid, msgOrKey) {
-  try {
-    if (!sock.authState?.creds?.myAppStateKeyId) {
-      if (!hasWarnedAppStateMissing) {
-        console.log('[Privacy] Fitur auto-archive & delete-for-me dinonaktifkan: myAppStateKeyId tidak disediakan WhatsApp untuk sesi ini.');
-        hasWarnedAppStateMissing = true;
-      }
-      return;
-    }
-    const key = msgOrKey?.key || msgOrKey;
-    if (!key || !key.id) return;
-
-    const timestamp = msgOrKey?.messageTimestamp ? Number(msgOrKey.messageTimestamp) : Math.floor(Date.now() / 1000);
-    await sock.chatModify(
-      {
-        deleteForMe: {
-          key: {
-            remoteJid: jid,
-            id: key.id,
-            fromMe: Boolean(key.fromMe),
-            participant: key.participant
-          },
-          timestamp,
-          deleteMedia: true
-        }
-      },
-      jid
-    );
-    console.log(`[Privacy] Berhasil menghapus pesan ${key.id} (fromMe: ${Boolean(key.fromMe)}) untuk bot`);
-  } catch (err) {
-    console.error('Failed to auto-delete message for me:', err.message);
   }
 }
 
@@ -453,11 +411,19 @@ async function startBot() {
     shouldSyncHistoryMessage: () => true
   });
 
+  let appStateResyncTimeout = null;
+  let appStateRetryInterval = null;
+  let appStateDiagnosticTimeout = null;
+
   sock.ev.on('creds.update', (update) => {
     Object.assign(state.creds, update);
     saveCreds();
     if (update.myAppStateKeyId) {
-      hasWarnedAppStateMissing = false;
+      resetAppStateWarning();
+      if (appStateRetryInterval) {
+        clearInterval(appStateRetryInterval);
+        appStateRetryInterval = null;
+      }
       console.log(`[Privacy] Sukses! myAppStateKeyId berhasil disinkronkan dari WhatsApp.`);
     }
   });
@@ -476,7 +442,7 @@ async function startBot() {
     }, 3000);
   }
 
-  sock.ev.on('connection.update', (update) => {
+  sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr && !isLinked && chosenAuthMethod === 'qr') {
@@ -486,6 +452,10 @@ async function startBot() {
 
     if (connection === 'close') {
       pairingRequested = false;
+      if (appStateResyncTimeout) clearTimeout(appStateResyncTimeout);
+      if (appStateRetryInterval) clearInterval(appStateRetryInterval);
+      if (appStateDiagnosticTimeout) clearTimeout(appStateDiagnosticTimeout);
+
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const isRestartRequired = statusCode === DisconnectReason.restartRequired || statusCode === 515;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
@@ -504,6 +474,50 @@ async function startBot() {
       if (typeof sock.cleanDirtyBits === 'function') {
         sock.cleanDirtyBits('account_sync').catch(() => {});
       }
+
+      await initSeenJids();
+
+      appStateResyncTimeout = setTimeout(async () => {
+        try {
+          console.log('[Privacy] Memicu resync app state...');
+          await sock.resyncAppState(['regular', 'critical_block', 'critical_unblock_low'], true);
+          console.log('[Privacy] Resync selesai. myAppStateKeyId:', sock.authState?.creds?.myAppStateKeyId ? 'ADA' : 'BELUM ADA');
+        } catch (err) {
+          console.warn('[Privacy] Resync gagal:', err.message);
+        }
+      }, 10000);
+
+      setTimeout(() => {
+        if (!sock.authState?.creds?.myAppStateKeyId) {
+          let retryCount = 0;
+          appStateRetryInterval = setInterval(async () => {
+            if (sock.authState?.creds?.myAppStateKeyId || retryCount >= 5) {
+              clearInterval(appStateRetryInterval);
+              appStateRetryInterval = null;
+              return;
+            }
+            retryCount++;
+            try {
+              console.log(`[Privacy] Retry resync app state #${retryCount}...`);
+              await sock.resyncAppState(['regular', 'critical_block', 'critical_unblock_low'], true);
+              if (sock.authState?.creds?.myAppStateKeyId) {
+                console.log('[Privacy] Resync berhasil setelah retry. myAppStateKeyId: ADA');
+                clearInterval(appStateRetryInterval);
+                appStateRetryInterval = null;
+              }
+            } catch (err) {
+              console.warn(`[Privacy] Retry resync #${retryCount} gagal:`, err.message);
+            }
+          }, 60000);
+        }
+      }, 30000);
+
+      appStateDiagnosticTimeout = setTimeout(() => {
+        if (!sock.authState?.creds?.myAppStateKeyId) {
+          console.warn('[Privacy] myAppStateKeyId masih kosong setelah 60 detik.');
+          console.warn('[Privacy] Saran: buka WhatsApp di HP utama, kirim pesan ke diri sendiri, lalu tunggu 1-2 menit.');
+        }
+      }, 60000);
     }
   });
 
