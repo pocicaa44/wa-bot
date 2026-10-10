@@ -4,9 +4,11 @@ const {
   default: makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
-  downloadMediaMessage,
+  fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
   Browsers,
-  makeCacheableSignalKeyStore
+  downloadMediaMessage,
+  jidNormalizedUser
 } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const sharp = require('sharp');
@@ -52,6 +54,8 @@ const logger = pino({ level: 'silent' });
 let chosenAuthMethod = config.authMethod;
 let chosenPhoneNumber = '';
 let pairingRequested = false;
+let reconnectAttempts = 0;
+let isConnected = false;
 
 const messageQueue = [];
 let isProcessingQueue = false;
@@ -418,26 +422,21 @@ async function startBot() {
       creds: state.creds,
       keys: makeCacheableSignalKeyStore(state.keys, logger)
     },
-    logger,
-    printQRInTerminal: false,
     browser: Browsers.ubuntu('Chrome'),
-    shouldSyncHistoryMessage: () => true,
-    keepAliveIntervalMs: 30000
+    keepAliveIntervalMs: 30000,
+    logger,
+    generateHighQualityLinkPreview: false,
+    syncFullHistory: false,
+    markOnlineOnConnect: false,
+    connectTimeoutMs: 60000,
+    defaultQueryTimeoutMs: 60000
   });
-
-  let appStateResyncTimeout = null;
-  let appStateRetryInterval = null;
-  let appStateDiagnosticTimeout = null;
 
   sock.ev.on('creds.update', (update) => {
     Object.assign(state.creds, update);
     saveCreds();
     if (update.myAppStateKeyId) {
       resetAppStateWarning();
-      if (appStateRetryInterval) {
-        clearInterval(appStateRetryInterval);
-        appStateRetryInterval = null;
-      }
       console.log(`[Privacy] Sukses! myAppStateKeyId berhasil disinkronkan dari WhatsApp.`);
     }
   });
@@ -447,7 +446,7 @@ async function startBot() {
 
     if (qr && !isLinked) {
       if (chosenAuthMethod === 'qr') {
-        console.log('Scan the QR code below:');
+        console.log('Scan QR berikut dengan WhatsApp:');
         qrcode.generate(qr, { small: true });
       } else if (chosenAuthMethod === 'pairing' && chosenPhoneNumber && !pairingRequested) {
         pairingRequested = true;
@@ -464,69 +463,28 @@ async function startBot() {
 
     if (connection === 'close') {
       pairingRequested = false;
-      if (appStateResyncTimeout) clearTimeout(appStateResyncTimeout);
-      if (appStateRetryInterval) clearInterval(appStateRetryInterval);
-      if (appStateDiagnosticTimeout) clearTimeout(appStateDiagnosticTimeout);
+      isConnected = false;
 
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       console.log(`Connection closed (status: ${statusCode}). Reconnecting: ${shouldReconnect}`);
 
       if (shouldReconnect) {
-        setTimeout(startBot, 5000);
+        const delay = Math.min(Math.max(5000 * reconnectAttempts, 5000), 60000);
+        setTimeout(() => {
+          reconnectAttempts++;
+          startBot();
+        }, delay);
       } else {
         console.log('Logged out. Perlu pairing ulang.');
       }
     } else if (connection === 'open') {
       pairingRequested = false;
+      reconnectAttempts = 0;
+      isConnected = true;
       console.log('Bot connected successfully.');
-      if (typeof sock.cleanDirtyBits === 'function') {
-        sock.cleanDirtyBits('account_sync').catch(() => {});
-      }
 
       await initSeenJids();
-
-      appStateResyncTimeout = setTimeout(async () => {
-        try {
-          console.log('[Privacy] Memicu resync app state...');
-          await sock.resyncAppState(['regular', 'critical_block', 'critical_unblock_low'], true);
-          console.log('[Privacy] Resync selesai. myAppStateKeyId:', sock.authState?.creds?.myAppStateKeyId ? 'ADA' : 'BELUM ADA');
-        } catch (err) {
-          console.warn('[Privacy] Resync gagal:', err.message);
-        }
-      }, 10000);
-
-      setTimeout(() => {
-        if (!sock.authState?.creds?.myAppStateKeyId) {
-          let retryCount = 0;
-          appStateRetryInterval = setInterval(async () => {
-            if (sock.authState?.creds?.myAppStateKeyId || retryCount >= 5) {
-              clearInterval(appStateRetryInterval);
-              appStateRetryInterval = null;
-              return;
-            }
-            retryCount++;
-            try {
-              console.log(`[Privacy] Retry resync app state #${retryCount}...`);
-              await sock.resyncAppState(['regular', 'critical_block', 'critical_unblock_low'], true);
-              if (sock.authState?.creds?.myAppStateKeyId) {
-                console.log('[Privacy] Resync berhasil setelah retry. myAppStateKeyId: ADA');
-                clearInterval(appStateRetryInterval);
-                appStateRetryInterval = null;
-              }
-            } catch (err) {
-              console.warn(`[Privacy] Retry resync #${retryCount} gagal:`, err.message);
-            }
-          }, 60000);
-        }
-      }, 30000);
-
-      appStateDiagnosticTimeout = setTimeout(() => {
-        if (!sock.authState?.creds?.myAppStateKeyId) {
-          console.warn('[Privacy] myAppStateKeyId masih kosong setelah 60 detik.');
-          console.warn('[Privacy] Saran: buka WhatsApp di HP utama, kirim pesan ke diri sendiri, lalu tunggu 1-2 menit.');
-        }
-      }, 60000);
     }
   });
 
