@@ -421,7 +421,8 @@ async function startBot() {
     logger,
     printQRInTerminal: false,
     browser: Browsers.ubuntu('Chrome'),
-    shouldSyncHistoryMessage: () => true
+    shouldSyncHistoryMessage: () => true,
+    keepAliveIntervalMs: 30000
   });
 
   let appStateResyncTimeout = null;
@@ -441,26 +442,24 @@ async function startBot() {
     }
   });
 
-  if (!isLinked && chosenAuthMethod === 'pairing' && chosenPhoneNumber && !pairingRequested) {
-    pairingRequested = true;
-    setTimeout(async () => {
-      try {
-        const code = await sock.requestPairingCode(chosenPhoneNumber);
-        const formatted = code?.match(/.{1,4}/g)?.join('-') || code;
-        console.log(`Pairing code: ${formatted}`);
-      } catch (err) {
-        console.error('Failed to request pairing code:', err.message);
-        pairingRequested = false;
-      }
-    }, 3000);
-  }
-
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    if (qr && !isLinked && chosenAuthMethod === 'qr') {
-      console.log('Scan the QR code below:');
-      qrcode.generate(qr, { small: true });
+    if (qr && !isLinked) {
+      if (chosenAuthMethod === 'qr') {
+        console.log('Scan the QR code below:');
+        qrcode.generate(qr, { small: true });
+      } else if (chosenAuthMethod === 'pairing' && chosenPhoneNumber && !pairingRequested) {
+        pairingRequested = true;
+        try {
+          const code = await sock.requestPairingCode(chosenPhoneNumber);
+          const formatted = code?.match(/.{1,4}/g)?.join('-') || code;
+          console.log(`Pairing code: ${formatted}`);
+        } catch (err) {
+          console.error('Failed to request pairing code:', err.message);
+          pairingRequested = false;
+        }
+      }
     }
 
     if (connection === 'close') {
@@ -470,16 +469,13 @@ async function startBot() {
       if (appStateDiagnosticTimeout) clearTimeout(appStateDiagnosticTimeout);
 
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const isRestartRequired = statusCode === DisconnectReason.restartRequired || statusCode === 515;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
       console.log(`Connection closed (status: ${statusCode}). Reconnecting: ${shouldReconnect}`);
 
       if (shouldReconnect) {
-        if (isRestartRequired) {
-          startBot();
-        } else {
-          setTimeout(startBot, 3000);
-        }
+        setTimeout(startBot, 5000);
+      } else {
+        console.log('Logged out. Perlu pairing ulang.');
       }
     } else if (connection === 'open') {
       pairingRequested = false;
