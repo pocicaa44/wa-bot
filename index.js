@@ -35,18 +35,18 @@ const config = {
   sessionDir: './auth_info',
   stickerQuality: 80,
   stickerSize: 512,
-  packName: process.env.PACK_NAME || 'smone',
+  packName: process.env.PACK_NAME || 'sm1',
   packPublisher: process.env.PACK_PUBLISHER || '@imagoodppl',
   maxChatsPerMinute: Number(process.env.MAX_CHATS_PER_MINUTE) || 20
 };
 
-const helpMessage = `*dwnBOT*
+const helpMessage = `*LIST COMMAND*
 - *.sticker* : kirim gambar/video atau balas media dengan *.sticker* untuk stiker statis
 - *.vsticker* : balas video dengan *.vsticker* [detik] untuk stiker video
 - *.help* : tampilkan menu bantuan
 - *.status* : tampilkan status bot`;
 
-const fallbackMessage = 'Maaf saya tidak mengerti, gunakan .help untuk melihat bantuan.';
+const fallbackMessage = 'Maaf saya tidak mengerti, gunakan `.help` untuk melihat bantuan.';
 
 const logger = pino({ level: 'silent' });
 let chosenAuthMethod = config.authMethod;
@@ -122,73 +122,62 @@ function unwrapMessage(msg) {
 }
 
 async function handleMessage(sock, msg) {
-  if (!msg.message || msg.key.fromMe) return;
+  try {
+    // Guard minimal
+    if (!msg.message) return;
+    if (msg.key.fromMe) return;
 
-  const content = unwrapMessage(msg.message);
-  if (!content) return;
+    const jid = msg.key.remoteJid;
+    if (!jid) return;
+    if (jid.endsWith('@g.us')) return;
+    if (jid === 'status@broadcast' || jid.endsWith('@broadcast')) return;
 
-  const jid = msg.key.remoteJid;
-  if (jid === 'status@broadcast' || jid.endsWith('@broadcast')) return;
-
-  if (!checkRateLimit()) {
-    console.log(`[RateLimit] Batas ${config.maxChatsPerMinute} chat/menit tercapai. Pesan ${msg.key.id} diabaikan.`);
-    return;
-  }
-
-  await markAsRead(sock, [msg.key]);
-
-  if (!msg.key.fromMe && jid.endsWith('@s.whatsapp.net')) {
-    const isFirst = await isFirstTimeFromJid(jid);
-    if (isFirst) {
-      await archiveChat(sock, jid, msg);
-    }
-  }
-
-  const rawText = content.conversation || content.extendedTextMessage?.text || content.imageMessage?.caption || content.videoMessage?.caption || '';
-  const text = rawText.trim().toLowerCase();
-  const isStickerCommand = text === '.sticker' || text === '.stiker';
-  const isVStickerCommand = text.startsWith('.vsticker');
-
-  const quotedContent = unwrapMessage(content.extendedTextMessage?.contextInfo?.quotedMessage);
-  const targetVideoMsg = quotedContent?.videoMessage || content.videoMessage;
-  const targetImageMsg = content.imageMessage || quotedContent?.imageMessage;
-
-  if (isVStickerCommand) {
-    const parsed = parseVStickerCommand(rawText);
-    if (!parsed.valid) {
-      await sock.sendMessage(jid, { text: parsed.error }, { quoted: msg });
-      return;
-    }
-
-    const quotedMedia = quotedContent || (content.videoMessage || content.imageMessage ? content : null);
-    if (!quotedMedia) {
-      await sock.sendMessage(jid, { text: '❌ Balas sebuah video dengan .vsticker' }, { quoted: msg });
-      return;
-    }
-
+    // ===== AUTO-ARCHIVE DI SINI (BARIS PALING AWAL) =====
     try {
-      const sentMedia = await handleVSticker(sock, msg, jid, quotedMedia, parsed.duration, parsed.warning);
-      if (sentMedia) {
-        const contextInfo = msg.message?.extendedTextMessage?.contextInfo;
-        const quotedMediaKey = contextInfo?.stanzaId ? {
-          remoteJid: jid,
-          fromMe: contextInfo.participant === sock.user?.id,
-          id: contextInfo.stanzaId,
-          participant: contextInfo.participant
-        } : null;
-        const keysToDelete = [msg.key, quotedMediaKey, sentMedia?.key].filter(Boolean);
-        await deleteMediaBatch(sock, jid, keysToDelete);
+      const isFirst = await isFirstTimeFromJid(jid);
+      console.log(`[autoArchive] JID ${jid} isFirst=${isFirst}`);
+      if (isFirst) {
+        await archiveChat(sock, jid);
       }
-    } catch (err) {
-      console.error('[vsticker] Error tidak terduga pada handleVSticker:', err.message);
+    } catch (e) {
+      console.warn('[autoArchive] error:', e.message);
     }
-    return;
-  }
+    // =====================================================
 
-  if (isStickerCommand) {
-    if (targetVideoMsg) {
+    const content = unwrapMessage(msg.message);
+    if (!content) return;
+
+    if (!checkRateLimit()) {
+      console.log(`[RateLimit] Batas ${config.maxChatsPerMinute} chat/menit tercapai. Pesan ${msg.key.id} diabaikan.`);
+      return;
+    }
+
+    await markAsRead(sock, [msg.key]);
+
+    const rawText = content.conversation || content.extendedTextMessage?.text || content.imageMessage?.caption || content.videoMessage?.caption || '';
+    const text = rawText.trim().toLowerCase();
+    const isStickerCommand = text === '.sticker' || text === '.stiker';
+    const isVStickerCommand = text.startsWith('.vsticker');
+
+    const quotedContent = unwrapMessage(content.extendedTextMessage?.contextInfo?.quotedMessage);
+    const targetVideoMsg = quotedContent?.videoMessage || content.videoMessage;
+    const targetImageMsg = content.imageMessage || quotedContent?.imageMessage;
+
+    if (isVStickerCommand) {
+      const parsed = parseVStickerCommand(rawText);
+      if (!parsed.valid) {
+        await sock.sendMessage(jid, { text: parsed.error }, { quoted: msg });
+        return;
+      }
+
+      const quotedMedia = quotedContent || (content.videoMessage || content.imageMessage ? content : null);
+      if (!quotedMedia) {
+        await sock.sendMessage(jid, { text: '❌ Balas sebuah video dengan .vsticker' }, { quoted: msg });
+        return;
+      }
+
       try {
-        const sentMedia = await handleStaticStickerFromVideo(sock, msg, jid, quotedContent || (content.videoMessage ? content : null));
+        const sentMedia = await handleVSticker(sock, msg, jid, quotedMedia, parsed.duration, parsed.warning);
         if (sentMedia) {
           const contextInfo = msg.message?.extendedTextMessage?.contextInfo;
           const quotedMediaKey = contextInfo?.stanzaId ? {
@@ -201,102 +190,126 @@ async function handleMessage(sock, msg) {
           await deleteMediaBatch(sock, jid, keysToDelete);
         }
       } catch (err) {
-        console.error('[vsticker] Error tidak terduga pada handleStaticStickerFromVideo:', err.message);
+        console.error('[vsticker] Error tidak terduga pada handleVSticker:', err.message);
       }
       return;
     }
 
-    if (targetImageMsg) {
-      try {
-        const downloadTarget = content.imageMessage
-          ? { key: msg.key, message: { imageMessage: content.imageMessage } }
-          : {
-              key: {
-                remoteJid: jid,
-                id: content.extendedTextMessage?.contextInfo?.stanzaId,
-                participant: content.extendedTextMessage?.contextInfo?.participant
-              },
-              message: { imageMessage: quotedContent.imageMessage }
-            };
-
-        const buffer = await downloadMediaMessage(
-          downloadTarget,
-          'buffer',
-          {},
-          { logger, reuploadRequest: sock.updateMediaMessage }
-        );
-        const sticker = await convertToSticker(buffer);
-
-        await simulateTyping(sock, jid, 1500, 2500);
-        const sentMsg = await sock.sendMessage(jid, { sticker });
-
-        const contextInfo = msg.message?.extendedTextMessage?.contextInfo;
-        const quotedMediaKey = contextInfo?.stanzaId ? {
-          remoteJid: jid,
-          fromMe: contextInfo.participant === sock.user?.id,
-          id: contextInfo.stanzaId,
-          participant: contextInfo.participant
-        } : (downloadTarget.key && downloadTarget.key.id !== msg.key?.id ? downloadTarget.key : null);
-
-        const keysToDelete = [msg.key, quotedMediaKey, sentMsg?.key].filter(Boolean);
-        await deleteMediaBatch(sock, jid, keysToDelete);
-      } catch (err) {
-        console.error('Failed to create sticker:', err.message);
+    if (isStickerCommand) {
+      if (targetVideoMsg) {
         try {
-          await simulateTyping(sock, jid, 500, 1000);
-          await sock.sendMessage(jid, { text: 'failed' }, { quoted: msg });
-        } catch (sendErr) {
-          console.error('Failed to send error notification:', sendErr.message);
+          const sentMedia = await handleStaticStickerFromVideo(sock, msg, jid, quotedContent || (content.videoMessage ? content : null));
+          if (sentMedia) {
+            const contextInfo = msg.message?.extendedTextMessage?.contextInfo;
+            const quotedMediaKey = contextInfo?.stanzaId ? {
+              remoteJid: jid,
+              fromMe: contextInfo.participant === sock.user?.id,
+              id: contextInfo.stanzaId,
+              participant: contextInfo.participant
+            } : null;
+            const keysToDelete = [msg.key, quotedMediaKey, sentMedia?.key].filter(Boolean);
+            await deleteMediaBatch(sock, jid, keysToDelete);
+          }
+        } catch (err) {
+          console.error('[vsticker] Error tidak terduga pada handleStaticStickerFromVideo:', err.message);
         }
+        return;
+      }
+
+      if (targetImageMsg) {
+        try {
+          const downloadTarget = content.imageMessage
+            ? { key: msg.key, message: { imageMessage: content.imageMessage } }
+            : {
+                key: {
+                  remoteJid: jid,
+                  id: content.extendedTextMessage?.contextInfo?.stanzaId,
+                  participant: content.extendedTextMessage?.contextInfo?.participant
+                },
+                message: { imageMessage: quotedContent.imageMessage }
+              };
+
+          const buffer = await downloadMediaMessage(
+            downloadTarget,
+            'buffer',
+            {},
+            { logger, reuploadRequest: sock.updateMediaMessage }
+          );
+          const sticker = await convertToSticker(buffer);
+
+          await simulateTyping(sock, jid, 1500, 2500);
+          const sentMsg = await sock.sendMessage(jid, { sticker });
+
+          const contextInfo = msg.message?.extendedTextMessage?.contextInfo;
+          const quotedMediaKey = contextInfo?.stanzaId ? {
+            remoteJid: jid,
+            fromMe: contextInfo.participant === sock.user?.id,
+            id: contextInfo.stanzaId,
+            participant: contextInfo.participant
+          } : (downloadTarget.key && downloadTarget.key.id !== msg.key?.id ? downloadTarget.key : null);
+
+          const keysToDelete = [msg.key, quotedMediaKey, sentMsg?.key].filter(Boolean);
+          await deleteMediaBatch(sock, jid, keysToDelete);
+        } catch (err) {
+          console.error('Failed to create sticker:', err.message);
+          try {
+            await simulateTyping(sock, jid, 500, 1000);
+            await sock.sendMessage(jid, { text: 'failed' }, { quoted: msg });
+          } catch (sendErr) {
+            console.error('Failed to send error notification:', sendErr.message);
+          }
+        }
+        return;
+      }
+
+      await sock.sendMessage(
+        jid,
+        { text: '❌ Balas sebuah video atau gambar dengan perintah ini.' },
+        { quoted: msg }
+      );
+      return;
+    }
+
+    if (content.imageMessage) {
+      try {
+        await simulateTyping(sock, jid, 800, 1500);
+        await sock.sendMessage(jid, { text: 'Kirim gambar dengan caption .sticker untuk membuat stiker, atau gunakan .help untuk melihat bantuan.' }, { quoted: msg });
+      } catch (err) {
+        console.error('Failed to send image fallback reply:', err.message);
       }
       return;
     }
 
-    await sock.sendMessage(
-      jid,
-      { text: '❌ Balas sebuah video atau gambar dengan perintah ini.' },
-      { quoted: msg }
-    );
-    return;
-  }
-
-  if (content.imageMessage) {
-    try {
-      await simulateTyping(sock, jid, 800, 1500);
-      await sock.sendMessage(jid, { text: 'Kirim gambar dengan caption .sticker untuk membuat stiker, atau gunakan .help untuk melihat bantuan.' }, { quoted: msg });
-    } catch (err) {
-      console.error('Failed to send image fallback reply:', err.message);
+    if (text === '.help') {
+      try {
+        await simulateTyping(sock, jid, 800, 1500);
+        await sock.sendMessage(jid, { text: helpMessage }, { quoted: msg });
+      } catch (err) {
+        console.error('Failed to send help reply:', err.message);
+      }
+      return;
     }
-    return;
-  }
 
-  if (text === '.help') {
-    try {
-      await simulateTyping(sock, jid, 800, 1500);
-      await sock.sendMessage(jid, { text: helpMessage }, { quoted: msg });
-    } catch (err) {
-      console.error('Failed to send help reply:', err.message);
+    if (text === '.status') {
+      try {
+        await simulateTyping(sock, jid, 500, 1000);
+        await sock.sendMessage(jid, { text: 'ready' }, { quoted: msg });
+      } catch (err) {
+        console.error('Failed to send status reply:', err.message);
+      }
+      return;
     }
-    return;
-  }
 
-  if (text === '.status') {
-    try {
-      await simulateTyping(sock, jid, 500, 1000);
-      await sock.sendMessage(jid, { text: 'ready' }, { quoted: msg });
-    } catch (err) {
-      console.error('Failed to send status reply:', err.message);
+    if (rawText) {
+      try {
+        await simulateTyping(sock, jid, 800, 1500);
+        await sock.sendMessage(jid, { text: fallbackMessage }, { quoted: msg });
+      } catch (err) {
+        console.error('Failed to send fallback reply:', err.message);
+      }
     }
-    return;
-  }
-
-  if (rawText) {
-    try {
-      await simulateTyping(sock, jid, 800, 1500);
-      await sock.sendMessage(jid, { text: fallbackMessage }, { quoted: msg });
-    } catch (err) {
-      console.error('Failed to send fallback reply:', err.message);
-    }
+  } catch (err) {
+    console.error('[handleMessage] error:', err);
   }
 }
 
